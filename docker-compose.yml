@@ -10,12 +10,12 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/social_graph
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
       - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
       - REDDIT_USER_AGENT=${REDDIT_USER_AGENT}
-    depends_on:
-      - db
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   # Frontend (React + Vite)
@@ -23,26 +23,11 @@ services:
     build: ./frontend
     container_name: social_engine_frontend
     ports:
-      - "3000:3000" # Vite default is often 5173, but we'll map to 3000 or configure Vite
+      - "3000:3000"
     volumes:
       - ./frontend:/app
       - /app/node_modules
     environment:
       - VITE_API_URL=http://localhost:8000
-    command: npm run dev -- --host
+    command: yarn dev --host
 
-  # Database (PostgreSQL)
-  db:
-    image: postgres:15-alpine
-    container_name: social_engine_db
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=social_graph
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:

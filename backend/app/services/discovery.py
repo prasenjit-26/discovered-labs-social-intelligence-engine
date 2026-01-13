@@ -1,10 +1,10 @@
 from typing import List
 from app.models.unified import Community
 from app.sources.reddit.factory import get_reddit_source
-from app.services.entity_resolver import EntityResolver
+from app.services.intelligence.entity_resolver import EntityResolver
 from app.core.database import supabase, get_supabase_client
 from app.core.config import settings
-from app.services.llm_extractor import LLMExtractorService
+from app.services.intelligence.llm_extractor import LLMExtractorService
 from thefuzz import fuzz
 from textblob import TextBlob
 from app.services.graph_service import GraphService

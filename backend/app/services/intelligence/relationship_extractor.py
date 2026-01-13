@@ -1,6 +1,6 @@
 import spacy
 from typing import List, Tuple, Optional
-from app.services.entity_resolver import EntityResolver
+from app.services.intelligence.entity_resolver import EntityResolver
 from spacy.lang.en.stop_words import STOP_WORDS
 
 class RelationshipExtractor:
