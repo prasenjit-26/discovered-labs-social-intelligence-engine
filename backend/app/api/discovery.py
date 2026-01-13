@@ -11,7 +11,7 @@ router = APIRouter()
 discovery_service = DiscoveryService(graph_service=shared_graph_service)
 
 
-async def _get_cached_discovery(domain: str) -> Optional[List[Community]]:
+async def _get_db_discovery(domain: str) -> Optional[List[Community]]:
     """Load last discovery result for a domain from company_communities mapping."""
     try:
         mapping_resp = await asyncio.to_thread(
@@ -110,10 +110,10 @@ async def discover_communities(domain: str, refetch: bool = False):
     """
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
-        
+
     try:
         if not refetch:
-            cached = await _get_cached_discovery(domain)
+            cached = await _get_db_discovery(domain)
             if cached is not None and len(cached) > 0:
                 return cached
 
@@ -212,7 +212,7 @@ async def get_company_posts(domain: str, community_limit: int = 5, post_limit: i
 async def get_cached_discovery(domain: str):
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
-    cached = await _get_cached_discovery(domain)
+    cached = await _get_db_discovery(domain)
     if cached is None:
         raise HTTPException(status_code=404, detail="No cached discovery for this domain")
     return cached

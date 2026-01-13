@@ -89,14 +89,14 @@ const DiscoveryPanel = ({ communities, loading, history, selectedCompany, compan
                   <Users size={16} />
                   <span>{subscribers.toLocaleString()} subscribers</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                {/* <div className="flex items-center gap-1.5">
                   <Activity size={16} />
                   <span>{activeUsers.toLocaleString()} active</span>
-                </div>
-                <div className="flex items-center gap-1.5">
+                </div> */}
+                {/* <div className="flex items-center gap-1.5">
                   <TrendingUp size={16} />
                   <span>{engagementPct}% engagement</span>
-                </div>
+                </div> */}
                 <a 
                   href={comm.url} 
                   target="_blank" 
@@ -116,7 +116,7 @@ const DiscoveryPanel = ({ communities, loading, history, selectedCompany, compan
           <h3 className="text-lg font-bold text-gray-900">Top Community Posts</h3>
 
           {(companyPosts || []).length === 0 && (
-            <div className="py-8 text-center text-gray-400 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+            <div className="py-8 text-center text-gray-400 bg-gray-50 rounded-xl border border-gray-200 border-dashed">
               No posts loaded yet.
             </div>
           )}
@@ -128,7 +128,7 @@ const DiscoveryPanel = ({ communities, loading, history, selectedCompany, compan
 
               return (
                 <div key={community.id} className="p-4 bg-white rounded-xl border border-gray-200">
-                  <div className="flex items-center justify-between">
+                  <div className="flex justify-between items-center">
                     <div className="font-bold text-gray-900">{community.name || community.id}</div>
                     {community.url && (
                       <a
@@ -148,7 +148,7 @@ const DiscoveryPanel = ({ communities, loading, history, selectedCompany, compan
                         <div className="text-sm text-gray-800 whitespace-pre-wrap line-clamp-4">
                           {p.content}
                         </div>
-                        <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
+                        <div className="flex justify-between items-center mt-2 text-xs text-gray-500">
                           <div>Engagement: {Math.round(p.engagement_score || 0).toLocaleString()}</div>
                           {p.url && (
                             <a
@@ -165,7 +165,7 @@ const DiscoveryPanel = ({ communities, loading, history, selectedCompany, compan
                     ))}
 
                     {posts.length === 0 && (
-                      <div className="py-4 text-sm text-gray-400 italic">No persisted posts for this community yet.</div>
+                      <div className="py-4 text-sm italic text-gray-400">No persisted posts for this community yet.</div>
                     )}
                   </div>
                 </div>

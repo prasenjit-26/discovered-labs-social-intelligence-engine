@@ -2,10 +2,10 @@ from typing import List, Optional
 import logging
 
 from app.sources.base import SocialSourcePlugin
-from app.sources.reddit import RedditPlugin
-from app.sources.reddit_json import RedditJsonPlugin
-from app.sources.pushshift import PushshiftPlugin
-from app.sources.reddit_html import RedditHtmlScrapePlugin
+from app.sources.reddit.official import RedditPlugin
+from app.sources.reddit.json_api import RedditJsonPlugin
+from app.sources.reddit.pushshift import PushshiftPlugin
+from app.sources.reddit.html_scrape import RedditHtmlScrapePlugin
 from app.sources.local_dataset import LocalDatasetPlugin
 from app.core.config import settings
 from app.models.unified import Community, UnifiedPost

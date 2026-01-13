@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4o-mini"
 
+    # X / Twitter (Level 3)
+    X_BEARER_TOKEN: str = ""
+    NITTER_BASE_URL: str = "https://nitter.net"
+    NITTER_FALLBACK_URLS: str = "https://nitter.net,https://nitter.poast.org,https://nitter.privacydev.net"
+
     class Config:
         env_file = ".env"
 

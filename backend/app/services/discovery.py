@@ -1,8 +1,7 @@
 from typing import List
 from app.models.unified import Community
-from app.sources.factory import get_reddit_source
+from app.sources.reddit.factory import get_reddit_source
 from app.services.entity_resolver import EntityResolver
-from app.services.relationship_extractor import RelationshipExtractor
 from app.core.database import supabase, get_supabase_client
 from app.core.config import settings
 from app.services.llm_extractor import LLMExtractorService
@@ -13,6 +12,7 @@ import logging
 import asyncio
 import math
 import time
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,6 @@ class DiscoveryService:
         self.reddit_source = get_reddit_source()
         
         self.entity_resolver = EntityResolver()
-        # Share the resolver to avoid double-loading spaCy
-        self.relationship_extractor = RelationshipExtractor(resolver=self.entity_resolver)
         self.graph_service = graph_service if graph_service else GraphService()
 
         self.llm_extractor = None
@@ -48,7 +46,8 @@ class DiscoveryService:
         5. Persist to DB
         """
         # 1. Extraction
-        query = company_domain.split('.')[0] # simplistic extraction
+        normalized = self._normalize_company_domain(company_domain)
+        query = normalized.split('.')[0] if normalized else company_domain.split('.')[0]
         
         # 2. Search (Mocking concurrent gathering for now)
         communities = await self.reddit_source.search_communities(query)
@@ -66,6 +65,23 @@ class DiscoveryService:
 
         # Return top 20
         return scored_communities[:20]
+
+    def _normalize_company_domain(self, company_domain: str) -> str:
+        raw = (company_domain or "").strip().lower()
+        if not raw:
+            return ""
+
+        # Support full URLs
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.netloc or parsed.path).split("/")[0].split(":")[0]
+
+        # Strip common subdomains
+        if host.startswith("www."):
+            host = host[4:]
+        if host.startswith("m."):
+            host = host[2:]
+
+        return host
 
     async def _process_community(self, comm: Community, company_domain: str):
         """Fetches posts, resolves entities, and persists data for a single community."""
@@ -121,22 +137,16 @@ class DiscoveryService:
                             )
                         except Exception:
                             continue
-            else:
-                # Fallback relationship inference (non-LLM)
-                for post in posts:
-                    relations = await self.relationship_extractor.extract_relations(post.content)
-                    for subj, rel, obj, confidence in relations:
-                        await self.graph_service.add_relationship(subj, rel, obj, confidence=confidence, company_domain=company_domain)
-                
+            
             comm.recent_posts = posts
             
             # 5. Persist to DB
-            await asyncio.to_thread(self._persist_community_data, comm)
+            await asyncio.to_thread(self._persist_community_data, comm, company_domain)
             
         except Exception as e:
             logger.error(f"Error fetching/saving posts for {comm.name}: {e}")
 
-    def _persist_community_data(self, community: Community):
+    def _persist_community_data(self, community: Community, company_domain: str):
         """Save community and its posts to Supabase"""
         try:
             client = get_supabase_client()
@@ -168,6 +178,7 @@ class DiscoveryService:
             for post in community.recent_posts:
                 post_data = {
                     "id": post.id,
+                    "company_domain": company_domain,
                     "platform": post.platform.value,
                     "content": post.content,
                     "author_id": post.author.id,
@@ -181,7 +192,12 @@ class DiscoveryService:
                 last_err = None
                 for attempt in range(3):
                     try:
-                        client.table("posts").upsert(post_data).execute()
+                        try:
+                            client.table("posts").upsert(post_data).execute()
+                        except Exception:
+                            # Backward compat if DB schema does not yet have company_domain
+                            post_data.pop("company_domain", None)
+                            client.table("posts").upsert(post_data).execute()
                         last_err = None
                         break
                     except Exception as e:
@@ -251,37 +267,37 @@ class DiscoveryService:
         Calculates 'Business Value Score' for each community.
         
         Formula factors:
-        - Relevance (Text match of name/description to query)
+        - Relevance (80%): Name exactness + description match.
         - Reach (Log of subscribers)
-        - Engagement (Active users / Subscribers ratio)
         """
         for comm in communities:
             # 1. Relevance: How close is the subreddit name to the company name?
-            # We use fuzzy matching. "OpenAI" vs "OpenAI" = 100. "ArtificialIntelligence" vs "OpenAI" = low.
-            name_match = fuzz.partial_ratio(query.lower(), comm.name.lower())
-            desc_match = fuzz.partial_ratio(query.lower(), comm.description.lower()) if comm.description else 0
+            # We combine partial_ratio (substring) and ratio (exact structure) to penalize irrelevant suffixes.
+            # e.g. "openai" vs "openai" -> 100 ratio.
+            # e.g. "openai" vs "openai_stock" -> High partial, Lower ratio.
             
-            # Weighted relevance
-            relevance = (name_match * 0.7 + desc_match * 0.3) / 100.0
+            q_low = query.lower()
+            name_low = comm.name.lower().replace("r/", "")
             
-            # 2. Engagement Ratio
-            engagement_ratio = 0.0
-            if comm.subscribers > 0 and comm.active_users and comm.active_users > 0:
-                engagement_ratio = comm.active_users / comm.subscribers
+            name_partial = fuzz.partial_ratio(q_low, name_low)
+            name_exact = fuzz.ratio(q_low, name_low)
+            desc_score = fuzz.partial_ratio(q_low, comm.description.lower()) if comm.description else 0
+            
+            # Relevance Score (0-100)
+            # 30% Partial Name + 30% Exact Name + 40% Description
+            # We boosted description to capture "Product of Company" relationships (e.g. ChatGPT -> OpenAI)
+            relevance = (name_partial * 0.3) + (name_exact * 0.3) + (desc_score * 0.4)
 
-            # 2b. Reach (log-scaled so very large communities don't dominate)
+            # 2. Reach (log-scaled) - Max ~40 points for 1M+ subs
+            # Massive communities should rank high even if name is not exact match.
             reach_score = 0.0
             if comm.subscribers and comm.subscribers > 0:
-                # Normalize so ~100k subscribers maps close to max reach score
-                reach_score = min((math.log10(comm.subscribers + 1) / math.log10(100000)) * 20.0, 20.0)
+                # Log scale: 1M subs = max score.
+                reach_score = min((math.log10(comm.subscribers + 1) / math.log10(1000000)) * 40.0, 40.0)
             
             # 3. Final Score
-            # We prioritize Relevance heavily, then Reach.
-            # Score = (Relevance * 50) + (Log(Subscribers) * factor) ... simplified here:
-            
-            # Normalized score 0-100 (heuristic)
-            engagement_score = min(engagement_ratio * 100.0, 20.0)
-            raw_score = (relevance * 70) + engagement_score + reach_score
+            # Relevance (60 max) + Reach (40 max)
+            raw_score = (relevance * 0.6) + reach_score
             
             comm.relevance_score = round(raw_score, 2)
             

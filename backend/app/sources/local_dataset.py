@@ -42,7 +42,9 @@ class LocalDatasetPlugin(SocialSourcePlugin):
                 )
         return communities[:20]
 
-    async def fetch_discussions(self, community_id: str, limit: int = 20) -> List[UnifiedPost]:
+    async def fetch_discussions(
+        self, community_id: str, limit: int = 20
+    ) -> List[UnifiedPost]:
         self._load()
         posts: List[UnifiedPost] = []
         for p in self._data.get("posts", []):

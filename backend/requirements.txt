@@ -15,5 +15,8 @@ python-multipart==0.0.6
 textblob==0.17.1
 beautifulsoup4==4.12.3
 lxml==5.1.0
+ntscraper==0.3.16
+snscrape==0.7.0.20230622
+certifi==2025.1.31
 supabase==2.10.0
 openai==1.12.0

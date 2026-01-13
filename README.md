@@ -10,7 +10,6 @@ The system is built as a modular microservices-style application (monorepo):
   - **Modular Sources**: Plugin system for Reddit, Twitter, etc. (`app/sources/`)
   - **Intelligence Engine**: 
     - `EntityResolver`: Normalizes names (e.g. "Open AI" -> "OpenAI").
-    - `RelationshipExtractor`: spaCy-based dependency parsing for knowledge graphs.
     - `ExposureService`: Pandas-based Share of Voice & Sentiment analysis.
     - `CausationService`: Time-lag cross-correlation for trend propagation.
 - **Frontend**: React + Vite + TailwindCSS

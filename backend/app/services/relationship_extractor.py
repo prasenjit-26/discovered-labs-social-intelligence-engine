@@ -57,20 +57,9 @@ class RelationshipExtractor:
             "WORK_OF_ART",
         }
 
-        def _normalize_concept(raw: str) -> Optional[str]:
-            if not raw:
-                return None
-            cleaned = " ".join(raw.strip().split())
-            cleaned = cleaned.strip(" \n\t\r" + "\"'`()[]{}:;,.!?" )
-            if not cleaned:
-                return None
-            if len(cleaned) < 3:
-                return None
-            return cleaned.lower()
-
         def _entity_for_token(sent, token):
             """Resolve an entity related to a token.
-
+            
             In real text, the grammatical subject/object token is often a common noun
             (e.g., "announcement") while the entity appears inside its subtree.
             """
@@ -105,48 +94,6 @@ class RelationshipExtractor:
                 return []
             return [token] + list(token.conjuncts)
 
-        def _concept_for_token(sent, token) -> Optional[str]:
-            """Fallback concept extractor for Option B.
-
-            If a token doesn't map cleanly to a named entity, we try to extract a noun phrase
-            from its subtree. This enables relations like PERSON -> concept or concept -> concept.
-            """
-            if token is None:
-                return None
-
-            # Prefer nouns/proper nouns in subtree (avoids capturing whole clauses)
-            candidates = [t for t in token.subtree if t.pos_ in {"NOUN", "PROPN"} and not t.is_stop]
-            if not candidates:
-                if token.pos_ in {"NOUN", "PROPN"} and not token.is_stop:
-                    candidates = [token]
-                else:
-                    return None
-
-            # Choose the leftmost noun-like head as anchor
-            anchor = min(candidates, key=lambda t: t.i)
-            span = doc[anchor.left_edge.i : anchor.right_edge.i + 1]
-
-            # Don't duplicate named entities as concepts
-            for ent in sent.ents:
-                if ent.start <= span.start < ent.end or ent.start < span.end <= ent.end:
-                    return None
-
-            words = []
-            for t in span:
-                if t.is_space:
-                    continue
-                if t.is_punct:
-                    continue
-                if t.lower_ in STOP_WORDS:
-                    continue
-                if t.pos_ in {"DET", "PRON", "PART"}:
-                    continue
-                words.append(t.lemma_.lower())
-                if len(words) >= 5:
-                    break
-
-            return _normalize_concept(" ".join(words))
-
         for sent in doc.sents:
             sent_ents = [e for e in sent.ents if e.label_ in relevant_entity_labels]
 
@@ -168,13 +115,6 @@ class RelationshipExtractor:
                     if prep is not None:
                         obj_token = next((c for c in prep.children if c.dep_ == "pobj"), None)
                         obj_via_prep = obj_token is not None
-
-                # Clause complements (common in posts): "Hinton says agents can share knowledge"
-                # Here, obj is not a direct noun; it is a clausal complement.
-                if obj_token is None:
-                    comp = next((c for c in token.children if c.dep_ in {"ccomp", "xcomp"}), None)
-                    if comp is not None:
-                        obj_token = comp
 
                 if obj_token is None:
                     continue
@@ -202,43 +142,25 @@ class RelationshipExtractor:
                     if ent is not None:
                         subj_candidates.append(ent)
 
-                subj_concepts = []
-                if len(subj_candidates) == 0:
-                    for st in _tokens_with_conj(subj_token):
-                        concept = _concept_for_token(sent, st)
-                        if concept is not None:
-                            subj_concepts.append(concept)
-
                 obj_candidates = []
                 for ot in _tokens_with_conj(obj_token):
                     ent = _entity_for_token(sent, ot)
                     if ent is not None:
                         obj_candidates.append(ent)
 
-                obj_concepts = []
-                if len(obj_candidates) == 0:
-                    for ot in _tokens_with_conj(obj_token):
-                        concept = _concept_for_token(sent, ot)
-                        if concept is not None:
-                            obj_concepts.append(concept)
-
-                if (len(subj_candidates) == 0 and len(subj_concepts) == 0) or (len(obj_candidates) == 0 and len(obj_concepts) == 0):
+                if len(subj_candidates) == 0 or len(obj_candidates) == 0:
                     continue
 
-                subj_nodes: List[Tuple[str, bool]] = []
+                subj_nodes: List[str] = []
                 for subj_ent in subj_candidates:
-                    subj_nodes.append((await self.resolver._normalize(subj_ent.text), True))
-                for subj_concept in subj_concepts:
-                    subj_nodes.append((subj_concept, False))
+                    subj_nodes.append(await self.resolver._normalize(subj_ent.text))
 
-                obj_nodes: List[Tuple[str, bool]] = []
+                obj_nodes: List[str] = []
                 for obj_ent in obj_candidates:
-                    obj_nodes.append((await self.resolver._normalize(obj_ent.text), True))
-                for obj_concept in obj_concepts:
-                    obj_nodes.append((obj_concept, False))
+                    obj_nodes.append(await self.resolver._normalize(obj_ent.text))
 
-                for subj, subj_is_entity in subj_nodes:
-                    for obj, obj_is_entity in obj_nodes:
+                for subj in subj_nodes:
+                    for obj in obj_nodes:
                         if not subj or not obj:
                             continue
                         if subj == obj:
@@ -247,8 +169,8 @@ class RelationshipExtractor:
                         confidence = 0.45
                         if verb_lemma in self.verb_map or relation_type in {"ceo", "founder"}:
                             confidence += 0.2
-                        if subj_is_entity and obj_is_entity:
-                            confidence += 0.1
+                        # Both are entities by definition now
+                        confidence += 0.1 
                         confidence += 0.05 if obj_via_prep else 0.1
                         if len(sent_ents) > 4:
                             confidence -= 0.1

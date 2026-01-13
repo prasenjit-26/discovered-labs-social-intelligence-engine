@@ -1,6 +1,6 @@
 from app.sources.base import SocialSourcePlugin
-from app.sources.reddit import RedditPlugin
-from app.sources.fallback import FallbackRedditSource
+from app.sources.reddit.official import RedditPlugin
+from app.sources.reddit.fallback import FallbackRedditSource
 from app.core.config import settings
 import logging
 

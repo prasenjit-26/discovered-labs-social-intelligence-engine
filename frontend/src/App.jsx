@@ -13,11 +13,12 @@ const api = axios.create({ baseURL: API_URL });
 function App() {
   const [status, setStatus] = useState('Checking System...')
   const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState('discovery')
+  const [activeSection, setActiveSection] = useState('l0l1')
+  const [activeL01Tab, setActiveL01Tab] = useState('discovery')
   
   // Inputs
   const [domain, setDomain] = useState('openai.com')
-  const [competitors, setCompetitors] = useState('google.com, anthropic.com')
+  const [competitors, setCompetitors] = useState('')
 
   // Data State
   const [communities, setCommunities] = useState([])
@@ -26,10 +27,70 @@ function App() {
   const [causationData, setCausationData] = useState(null)
   const [hasRun, setHasRun] = useState(false)
 
+  const [l3Loading, setL3Loading] = useState(false)
+  const [l3Ingested, setL3Ingested] = useState(null)
+
   const [companyPosts, setCompanyPosts] = useState([])
 
   const [discoveryHistory, setDiscoveryHistory] = useState([])
   const [selectedCompany, setSelectedCompany] = useState('')
+
+  const runExposure = async (companyDomain) => {
+    const target = companyDomain || selectedCompany || domain
+    const compList = competitors.split(',').map(c => c.trim()).filter(c => c)
+    if (!target) return
+
+    try {
+      const expoRes = await api.post('/api/v1/analytics/exposure', {
+        target_company: target,
+        competitors: compList,
+      })
+      setExposureData(expoRes.data)
+    } catch (e) {
+      console.error('Failed to compute exposure', e)
+    }
+  }
+
+  const ingestLevel3 = async (companyDomain) => {
+    const target = companyDomain || selectedCompany || domain
+    if (!target) return
+
+    setL3Loading(true)
+    try {
+      const res = await api.post('/api/v1/analytics/level3/ingest', {
+        domain: target,
+        limit_x: 25,
+        limit_hn: 25,
+      })
+      setL3Ingested(res.data)
+      return res.data
+    } catch (e) {
+      console.error('Level 3 ingest failed', e)
+      alert('Level 3 ingest failed. Check backend logs and Nitter availability.')
+      return null
+    } finally {
+      setL3Loading(false)
+    }
+  }
+
+  const runCausation = async (companyDomain) => {
+    const target = companyDomain || selectedCompany || domain
+    if (!target) return
+
+    setL3Loading(true)
+    try {
+      const res = await api.post('/api/v1/analytics/causation', {
+        target_company: target,
+        days: 14,
+      })
+      setCausationData(res.data)
+    } catch (e) {
+      console.error('Level 3 causation failed', e)
+      alert('Causation failed. Ingest X/HN first, or ensure posts exist in DB.')
+    } finally {
+      setL3Loading(false)
+    }
+  }
 
   useEffect(() => {
     // Check backend health
@@ -59,7 +120,8 @@ function App() {
     if (!companyDomain) return
     setLoading(true)
     setHasRun(true)
-    setActiveTab('discovery')
+    setActiveSection('l0l1')
+    setActiveL01Tab('discovery')
     setSelectedCompany(companyDomain)
     try {
       const res = await api.get(`/api/v1/discover/cached?domain=${companyDomain}`)
@@ -70,6 +132,8 @@ function App() {
 
       const graphRes = await api.get(`/api/v1/graph?domain=${companyDomain}`)
       setGraphData(graphRes.data)
+
+      await runExposure(companyDomain)
     } catch (e) {
       console.error('Failed to load cached discovery', e)
       alert('No cached data found for this company. Try refetch.')
@@ -82,7 +146,8 @@ function App() {
     if (!companyDomain) return
     setLoading(true)
     setHasRun(true)
-    setActiveTab('discovery')
+    setActiveSection('l0l1')
+    setActiveL01Tab('discovery')
     setSelectedCompany(companyDomain)
     try {
       const res = await api.post(`/api/v1/discover/refetch?domain=${companyDomain}`)
@@ -94,6 +159,8 @@ function App() {
 
       const graphRes = await api.get(`/api/v1/graph?domain=${companyDomain}`)
       setGraphData(graphRes.data)
+
+      await runExposure(companyDomain)
     } catch (e) {
       console.error('Failed to refetch discovery', e)
       alert('Refetch failed. Ensure backend and DB are running.')
@@ -109,6 +176,7 @@ function App() {
     setGraphData({ nodes: [], links: [] });
     setExposureData(null);
     setCausationData(null);
+    setL3Ingested(null);
 
     try {
       // 1. Level 0: Discovery
@@ -125,12 +193,7 @@ function App() {
       setGraphData(graphRes.data);
 
       // 3. Level 2: Competitive Exposure
-      const compList = competitors.split(',').map(c => c.trim()).filter(c => c);
-      const expoRes = await api.post('/api/v1/analytics/exposure', {
-        target_company: domain,
-        competitors: compList
-      });
-      setExposureData(expoRes.data);
+      await runExposure(domain)
 
       // 4. Level 3: Causation
       // const causeRes = await api.post('/api/v1/analytics/causation', {
@@ -219,16 +282,15 @@ function App() {
             <div className="flex justify-center mb-8">
               <div className="inline-flex p-1 bg-white rounded-xl border border-gray-200 shadow-sm">
                 {[
-                  { id: 'discovery', label: 'Discovery', icon: Users },
-                  { id: 'entities', label: 'Entity Browser', icon: Database },
-                  { id: 'graph', label: 'Knowledge Graph', icon: Share2 },
-                  { id: 'analytics', label: 'Intelligence', icon: BarChart2 },
+                  { id: 'l0l1', label: 'Level 0-1', icon: Share2 },
+                  { id: 'l2', label: 'Level 2', icon: BarChart2 },
+                  { id: 'l3', label: 'Level 3', icon: Zap },
                 ].map((tab) => (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
+                    onClick={() => setActiveSection(tab.id)}
                     className={`px-6 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${
-                      activeTab === tab.id 
+                      activeSection === tab.id 
                         ? 'bg-indigo-600 text-white shadow-md' 
                         : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                     }`}
@@ -242,25 +304,105 @@ function App() {
 
             {/* Content */}
             <div className="min-h-[400px]">
-              {activeTab === 'discovery' && (
-                <DiscoveryPanel
-                  communities={communities}
-                  loading={loading}
-                  history={discoveryHistory}
-                  selectedCompany={selectedCompany}
-                  companyPosts={companyPosts}
-                  onSelectCompany={loadCachedCompany}
-                  onRefetchCompany={refetchCompany}
-                />
+              {activeSection === 'l0l1' && (
+                <div className="space-y-6">
+                  <div className="flex justify-center">
+                    <div className="inline-flex p-1 bg-white rounded-xl border border-gray-200 shadow-sm">
+                      {[
+                        { id: 'discovery', label: 'Discovery', icon: Users },
+                        { id: 'entities', label: 'Entities', icon: Database },
+                        { id: 'graph', label: 'Graph', icon: Share2 },
+                      ].map((tab) => (
+                        <button
+                          key={tab.id}
+                          onClick={() => setActiveL01Tab(tab.id)}
+                          className={`px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${
+                            activeL01Tab === tab.id
+                              ? 'bg-indigo-600 text-white shadow-md'
+                              : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                          }`}
+                        >
+                          <tab.icon size={16} />
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {activeL01Tab === 'discovery' && (
+                    <DiscoveryPanel
+                      communities={communities}
+                      loading={loading}
+                      history={discoveryHistory}
+                      selectedCompany={selectedCompany}
+                      companyPosts={companyPosts}
+                      onSelectCompany={loadCachedCompany}
+                      onRefetchCompany={refetchCompany}
+                    />
+                  )}
+                  {activeL01Tab === 'entities' && (
+                    <EntityBrowser />
+                  )}
+                  {activeL01Tab === 'graph' && (
+                    <GraphView data={graphData} />
+                  )}
+                </div>
               )}
-              {activeTab === 'entities' && (
-                <EntityBrowser />
+
+              {activeSection === 'l2' && (
+                <AnalyticsDashboard exposureData={exposureData} causationData={null} />
               )}
-              {activeTab === 'graph' && (
-                <GraphView data={graphData} />
-              )}
-              {activeTab === 'analytics' && (
-                <AnalyticsDashboard exposureData={exposureData} causationData={causationData} />
+
+              {activeSection === 'l3' && (
+                <div className="space-y-6">
+                  <div className="p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="text-sm text-gray-500">Company</div>
+                        <div className="text-lg font-bold text-gray-900">{selectedCompany || domain}</div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            const target = selectedCompany || domain
+                            if (!target) return
+                            await ingestLevel3(target)
+                          }}
+                          disabled={l3Loading}
+                          className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${
+                            l3Loading
+                              ? 'text-gray-400 bg-gray-100 border-gray-200 cursor-not-allowed'
+                              : 'text-white bg-indigo-600 border-indigo-600 hover:bg-indigo-700'
+                          }`}
+                        >
+                          {l3Loading ? 'Working…' : 'Fetch X + HackerNews'}
+                        </button>
+
+                        <button
+                          onClick={() => runCausation(selectedCompany || domain)}
+                          disabled={l3Loading}
+                          className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${
+                            l3Loading
+                              ? 'text-gray-400 bg-gray-100 border-gray-200 cursor-not-allowed'
+                              : 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100'
+                          }`}
+                        >
+                          Run Causation
+                        </button>
+                      </div>
+                    </div>
+
+                    {l3Ingested?.ingested && (
+                      <div className="mt-3 text-sm text-gray-600">
+                        Ingested: <span className="font-semibold">X</span> {l3Ingested.ingested.x},
+                        {' '}<span className="font-semibold">HackerNews</span> {l3Ingested.ingested.hackernews}
+                      </div>
+                    )}
+                  </div>
+
+                  <AnalyticsDashboard exposureData={null} causationData={causationData} />
+                </div>
               )}
             </div>
 

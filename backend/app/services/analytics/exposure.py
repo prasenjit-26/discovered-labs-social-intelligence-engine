@@ -11,96 +11,224 @@ class ExposureService:
     Tracks share of voice, sentiment, and anomalies.
     """
     
-    def calculate_metrics(self, posts: List[UnifiedPost], target_company: str, competitors: List[str]) -> Dict[str, Any]:
+    def calculate_metrics(
+        self,
+        posts: List[UnifiedPost],
+        target_company: str,
+        competitors: List[str],
+        community_meta: Dict[str, Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
-        Calculates Share of Voice and Sentiment for target vs competitors.
+        Calculates Level 2 metrics for target vs competitors using DB-persisted posts scoped to discovered communities.
         """
-        # 1. Filter posts mentions
-        # We need to scan posts to see who they mention. 
-        # In a real DB, we'd query the 'mentions' table. 
-        # Here we simulate scanning the 'content'.
-        
-        data = []
-        all_entities = [target_company] + competitors
-        
+        community_meta = community_meta or {}
+
+        companies: List[str] = [target_company] + (competitors or [])
+        if len(companies) == 0:
+            return {"share_of_voice": [], "sentiment": {}, "co_mentions": [], "anomalies": [], "total_posts": 0}
+
+        def _aliases(domain: str) -> List[str]:
+            d = (domain or "").strip().lower()
+            if not d:
+                return []
+            base = d.split(".")[0]
+            out = [d, base]
+            # Cheap heuristic aliases for common patterns
+            if base and base not in out:
+                out.append(base)
+            return list(dict.fromkeys([a for a in out if a]))
+
+        aliases_by_company: Dict[str, List[str]] = {c: _aliases(c) for c in companies}
+
+        # Build post-level mention signals (one row per post)
+        post_rows: List[Dict[str, Any]] = []
+        mention_rows: List[Dict[str, Any]] = []
+
         for post in posts:
-            content_lower = post.content.lower()
-            found_entities = [e for e in all_entities if e.lower() in content_lower]
-            
-            # Sentiment
-            # Use pre-calculated sentiment if available, otherwise calculate it
+            content = post.content or ""
+            content_lower = content.lower()
+
             if post.sentiment is not None:
                 sentiment = post.sentiment
             else:
-                blob = TextBlob(post.content)
-                sentiment = blob.sentiment.polarity # -1.0 to 1.0
-            
-            for entity in found_entities:
-                data.append({
-                    "entity": entity,
+                blob = TextBlob(content)
+                sentiment = blob.sentiment.polarity
+
+            mentioned: List[str] = []
+            for company, aliases in aliases_by_company.items():
+                if any(a in content_lower for a in aliases):
+                    mentioned.append(company)
+
+            post_rows.append({
+                "post_id": post.id,
+                "community_id": post.community_id,
+                "timestamp": post.timestamp,
+                "sentiment": sentiment,
+                "mentioned": mentioned,
+            })
+
+            for company in mentioned:
+                mention_rows.append({
+                    "company": company,
+                    "community_id": post.community_id,
                     "timestamp": post.timestamp,
                     "sentiment": sentiment,
-                    "platform": post.platform,
-                    "source_id": post.community_id
                 })
-                
-        if not data:
-            return {"share_of_voice": {}, "sentiment": {}, "anomalies": []}
-            
-        df = pd.DataFrame(data)
-        
-        # 2. Share of Voice
-        # Count mentions per entity
-        total_mentions = len(df)
-        sov = df['entity'].value_counts(normalize=True).to_dict() # Percentage
-        
-        # 3. Sentiment Distribution
-        # Average sentiment per entity
-        sentiment_avg = df.groupby('entity')['sentiment'].mean().to_dict()
-        
-        # 4. Anomaly Detection (Simple Time-Series)
-        anomalies = self._detect_anomalies(df)
-        
+
+        total_posts = len(post_rows)
+        if len(mention_rows) == 0:
+            return {
+                "share_of_voice": [],
+                "sentiment": {},
+                "co_mentions": [],
+                "anomalies": [],
+                "total_posts": total_posts,
+            }
+
+        mdf = pd.DataFrame(mention_rows)
+        pdf = pd.DataFrame(post_rows)
+
+        # Share of Voice per community (subreddit)
+        counts = (
+            mdf.groupby(["community_id", "company"]).size().reset_index(name="mentions")
+        )
+        community_totals = (
+            mdf.groupby(["community_id"]).size().reset_index(name="total_mentions")
+        )
+        merged = counts.merge(community_totals, on="community_id", how="left")
+        merged["share"] = merged["mentions"] / merged["total_mentions"].replace({0: 1})
+
+        share_of_voice: List[Dict[str, Any]] = []
+        for cid in merged["community_id"].unique():
+            sub = merged[merged["community_id"] == cid]
+            totals_by_company = {row["company"]: int(row["mentions"]) for _, row in sub.iterrows()}
+            share_by_company = {row["company"]: float(row["share"]) for _, row in sub.iterrows()}
+            meta = community_meta.get(cid, {})
+            share_of_voice.append({
+                "community_id": cid,
+                "community_name": meta.get("name") or cid,
+                "totals": totals_by_company,
+                "shares": share_by_company,
+                "total_mentions": int(sub["total_mentions"].iloc[0]) if len(sub) else 0,
+            })
+
+        # Sentiment distribution per company
+        sentiment: Dict[str, Any] = {}
+        for company in companies:
+            sdf = mdf[mdf["company"] == company]
+            if len(sdf) == 0:
+                sentiment[company] = {"avg": 0.0, "count": 0, "buckets": {"negative": 0, "neutral": 0, "positive": 0}}
+                continue
+            avg = float(sdf["sentiment"].mean())
+            neg = int((sdf["sentiment"] < -0.2).sum())
+            neu = int(((sdf["sentiment"] >= -0.2) & (sdf["sentiment"] <= 0.2)).sum())
+            pos = int((sdf["sentiment"] > 0.2).sum())
+            sentiment[company] = {
+                "avg": avg,
+                "count": int(len(sdf)),
+                "buckets": {"negative": neg, "neutral": neu, "positive": pos},
+            }
+
+        # Co-mentions (post-level)
+        co_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        mention_counts: Dict[str, int] = defaultdict(int)
+        for _, row in pdf.iterrows():
+            mentioned = row.get("mentioned") or []
+            mentioned = list(dict.fromkeys([m for m in mentioned if m]))
+            for a in mentioned:
+                mention_counts[a] += 1
+            for i in range(len(mentioned)):
+                for j in range(i + 1, len(mentioned)):
+                    a = mentioned[i]
+                    b = mentioned[j]
+                    co_counts[a][b] += 1
+
+        co_mentions: List[Dict[str, Any]] = []
+        for a, row in co_counts.items():
+            for b, cnt in row.items():
+                denom = (mention_counts[a] + mention_counts[b] - cnt)
+                jaccard = float(cnt / denom) if denom > 0 else 0.0
+                co_mentions.append({"a": a, "b": b, "count": int(cnt), "jaccard": jaccard})
+
+        # Anomaly Detection
+        anomalies = self._detect_anomalies(mdf)
+
         return {
-            "share_of_voice": sov,
-            "sentiment": sentiment_avg,
+            "share_of_voice": share_of_voice,
+            "sentiment": sentiment,
+            "co_mentions": co_mentions,
             "anomalies": anomalies,
-            "total_mentions": total_mentions
+            "total_posts": total_posts,
         }
 
     def _detect_anomalies(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         Detects spikes in mentions.
-        Logic: If volume in current hour > mean + 2*std_dev of previous window.
+        Logic: If daily volume > mean + 3*std_dev of previous window (or mean+5 if std==0).
         """
         anomalies = []
         
-        # Group by entity and hour
-        # Ensure timestamp is datetime
+        if df is None or len(df) == 0:
+            return []
+
+        df = df.copy()
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        for entity in df['entity'].unique():
-            entity_df = df[df['entity'] == entity].copy()
-            # Resample to hourly counts
-            hourly_counts = entity_df.set_index('timestamp').resample('h').size()
-            
-            if len(hourly_counts) < 5:
+
+        # Daily counts by company + community
+        df['day'] = df['timestamp'].dt.floor('D')
+
+        grouped = df.groupby(['company', 'community_id', 'day']).size().reset_index(name='count')
+        for (company, community_id), sub in grouped.groupby(['company', 'community_id']):
+            if len(sub) < 7:
                 continue
-                
-            mean = hourly_counts.mean()
-            std = hourly_counts.std()
-            
-            # Check for spikes
-            threshold = mean + (2 * std) if std > 0 else mean + 5
-            
-            spikes = hourly_counts[hourly_counts > threshold]
-            
-            for time, count in spikes.items():
+
+            mean = float(sub['count'].mean())
+            std = float(sub['count'].std())
+            threshold = mean + (3 * std) if std > 0 else mean + 5
+
+            spikes = sub[sub['count'] > threshold]
+            for _, row in spikes.iterrows():
                 anomalies.append({
-                    "entity": entity,
-                    "type": "spike",
-                    "timestamp": time.isoformat(),
-                    "details": f"Mention count {count} exceeded threshold {round(threshold, 2)}"
+                    "entity": company,
+                    "type": "mention_spike",
+                    "timestamp": row['day'].isoformat(),
+                    "details": f"Daily mentions {int(row['count'])} exceeded threshold {round(threshold, 2)} in community {community_id}"
                 })
+
+        # Sentiment shift detection
+        # Logic:
+        # - compute daily average sentiment per (company, community)
+        # - compare most recent day to baseline mean of previous days
+        # - flag when absolute delta > threshold and there is enough volume on the recent day
+        sentiment_threshold = 0.2
+        min_mentions = 2
+        baseline_days = 3
+
+        daily_sent = df.groupby(['company', 'community_id', 'day'])['sentiment'].mean().reset_index(name='avg_sentiment')
+        daily_merged = daily_sent.merge(grouped, on=['company', 'community_id', 'day'], how='left')
+
+        for (company, community_id), sub in daily_merged.groupby(['company', 'community_id']):
+            sub = sub.sort_values('day')
+            if len(sub) < (baseline_days + 1):
+                continue
+
+            latest = sub.iloc[-1]
+            baseline = sub.iloc[-(baseline_days + 1):-1]
+            baseline_mean = float(baseline['avg_sentiment'].mean())
+            latest_avg = float(latest['avg_sentiment'])
+            latest_count = int(latest.get('count') or 0)
+            delta = latest_avg - baseline_mean
+
+            if latest_count < min_mentions:
+                continue
+            if abs(delta) <= sentiment_threshold:
+                continue
+
+            anomalies.append({
+                "entity": company,
+                "type": "sentiment_shift",
+                "timestamp": latest['day'].isoformat(),
+                "details": f"Avg sentiment shifted by {round(delta, 2)} (baseline {round(baseline_mean, 2)} → {round(latest_avg, 2)}) in community {community_id}"
+            })
                 
         return anomalies
