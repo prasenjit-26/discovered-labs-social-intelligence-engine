@@ -30,6 +30,8 @@ function App() {
   const [l3Loading, setL3Loading] = useState(false)
   const [l3Ingested, setL3Ingested] = useState(null)
 
+  const [l3UseMockX, setL3UseMockX] = useState(false)
+
   const [companyPosts, setCompanyPosts] = useState([])
 
   const [discoveryHistory, setDiscoveryHistory] = useState([])
@@ -61,6 +63,7 @@ function App() {
         domain: target,
         limit_x: 25,
         limit_hn: 25,
+        use_mock_x: l3UseMockX,
       })
       setL3Ingested(res.data)
       return res.data
@@ -393,10 +396,26 @@ function App() {
                       </div>
                     </div>
 
+                    <div className="flex gap-2 items-center mt-3 text-sm text-gray-600">
+                      <input
+                        id="l3UseMockX"
+                        type="checkbox"
+                        checked={l3UseMockX}
+                        onChange={(e) => setL3UseMockX(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="l3UseMockX" className="select-none">
+                        Use mock X data (recommended for demos)
+                      </label>
+                    </div>
+
                     {l3Ingested?.ingested && (
                       <div className="mt-3 text-sm text-gray-600">
                         Ingested: <span className="font-semibold">X</span> {l3Ingested.ingested.x},
                         {' '}<span className="font-semibold">HackerNews</span> {l3Ingested.ingested.hackernews}
+                        {l3Ingested.use_mock_x ? (
+                          <span className="ml-2 font-semibold text-indigo-700">(mock X)</span>
+                        ) : null}
                       </div>
                     )}
                   </div>

@@ -37,7 +37,17 @@ class CausationService:
         best_lag = 0
         best_corr = 0.0
         for lag in range(-max_lag_hours, max_lag_hours + 1):
-            corr = a.corr(b.shift(lag))
+            b_shift = b.shift(lag)
+
+            # Correlation is undefined when either series has zero variance.
+            # Pandas/numpy will emit RuntimeWarnings and return NaN.
+            try:
+                if a.std(ddof=0) == 0 or b_shift.std(ddof=0) == 0:
+                    continue
+            except Exception:
+                continue
+
+            corr = a.corr(b_shift)
             if pd.notna(corr) and abs(corr) > abs(best_corr):
                 best_corr = float(corr)
                 best_lag = int(lag)
@@ -70,7 +80,10 @@ class CausationService:
         train = pivot.iloc[:-test_n]
         test = pivot.iloc[-test_n:]
 
-        edges = []
+        # Keep only meaningful edges. We store the best edge per ordered platform pair
+        # (from,to) by absolute correlation.
+        edges_by_pair: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        min_abs_corr = 0.15
         for i in range(len(platforms)):
             for j in range(len(platforms)):
                 if i == j:
@@ -78,7 +91,7 @@ class CausationService:
                 a = platforms[i]
                 b = platforms[j]
                 lag, corr = self._best_lag_corr(train[a], train[b])
-                if corr == 0 or pd.isna(corr):
+                if corr == 0 or pd.isna(corr) or abs(float(corr)) < min_abs_corr:
                     continue
 
                 # Determine direction using the same lag interpretation as before
@@ -94,12 +107,21 @@ class CausationService:
                     # simultaneous, skip edge
                     continue
 
-                edges.append({
-                    "from": str(leader.value if isinstance(leader, Platform) else leader),
-                    "to": str(follower.value if isinstance(follower, Platform) else follower),
+                from_id = str(leader.value if isinstance(leader, Platform) else leader)
+                to_id = str(follower.value if isinstance(follower, Platform) else follower)
+                edge = {
+                    "from": from_id,
+                    "to": to_id,
                     "lag_hours": int(lag_hours),
                     "correlation": round(float(corr), 3),
-                })
+                }
+
+                key = (from_id, to_id)
+                prev = edges_by_pair.get(key)
+                if prev is None or abs(edge["correlation"]) > abs(prev["correlation"]):
+                    edges_by_pair[key] = edge
+
+        edges = list(edges_by_pair.values())
 
         # Pick best single edge for backward-compatible fields
         best = None

@@ -9,6 +9,7 @@ from app.models.unified import UnifiedPost, Platform, SocialActor
 from app.core.database import supabase
 from app.sources.x.factory import get_x_source
 from app.sources.hackernews.factory import get_hackernews_source
+import hashlib
 
 router = APIRouter()
 exposure_service = ExposureService()
@@ -160,11 +161,187 @@ def persist_generic_posts(posts: List[UnifiedPost], company_domain: str = ""):
             print("Failed to persist post:", post_data)
 
 
+def _mock_x_posts(query: str, domain: str, limit: int = 25) -> List[UnifiedPost]:
+    now = datetime.utcnow()
+    base = (domain or query or "mock").strip().lower().encode("utf-8")
+    seed_int = int(hashlib.sha256(base).hexdigest()[:8], 16)
+
+    posts: List[UnifiedPost] = []
+    n = max(1, int(limit or 25))
+
+    # Deterministic pseudo-random helper (no global RNG)
+    def _mix(x: int) -> int:
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= (x >> 17) & 0xFFFFFFFF
+        x ^= (x << 5) & 0xFFFFFFFF
+        return x & 0xFFFFFFFF
+
+    # Create 2-4 burst windows within last ~36 hours.
+    # Each burst generates 5-10 posts inside a 1-2 hour span.
+    burst_count = 2 + (seed_int % 3)  # 2..4
+    burst_centers = []
+    s = seed_int & 0xFFFFFFFF
+    for _ in range(burst_count):
+        s = _mix(s)
+        # 1..36 hours ago
+        burst_centers.append(1 + (s % 36))
+
+    burst_centers = sorted(list(dict.fromkeys(burst_centers)))
+
+    i = 0
+    for b_idx, center_hours_ago in enumerate(burst_centers):
+        if i >= n:
+            break
+
+        s = _mix(s + b_idx + seed_int)
+        burst_size = 5 + (s % 6)  # 5..10
+        burst_span_hours = 1 + ((s >> 8) % 2)  # 1..2
+
+        for j in range(burst_size):
+            if i >= n:
+                break
+
+            # Spread within the burst window by minutes
+            s = _mix(s + j + i)
+            minute_offset = int(s % 60)
+            hour_offset = int((s >> 16) % burst_span_hours)
+            ts = now - timedelta(hours=int(center_hours_ago + hour_offset), minutes=minute_offset)
+
+            uid = (seed_int + i) % 10_000_000
+            content = (
+                f"{query} BREAKING burst#{b_idx} #{uid}: "
+                f"{query} spike in mentions, discussion accelerating."
+            )
+
+            posts.append(
+                UnifiedPost(
+                    id=f"mock_x_{seed_int}_{b_idx}_{i}",
+                    platform=Platform.TWITTER,
+                    content=content,
+                    author=SocialActor(
+                        id=f"mock_user_{(seed_int + i) % 9999}",
+                        username=f"mock_user_{(seed_int + i) % 9999}",
+                        platform=Platform.TWITTER,
+                    ),
+                    community_id=None,
+                    timestamp=ts,
+                    engagement_score=float(150 + (uid % 500)),
+                    url=f"https://x.com/mock/status/{seed_int}{b_idx}{i}",
+                    sentiment=None,
+                )
+            )
+            i += 1
+
+    # Fill remainder with sparse background noise across last 72 hours
+    while i < n:
+        s = _mix(s + i + seed_int)
+        hours_ago = 1 + int(s % 72)
+        minute_offset = int((s >> 8) % 60)
+        ts = now - timedelta(hours=hours_ago, minutes=minute_offset)
+        uid = (seed_int + i) % 10_000_000
+        content = f"{query} update #{uid}: ongoing chatter and reactions."
+        posts.append(
+            UnifiedPost(
+                id=f"mock_x_{seed_int}_noise_{i}",
+                platform=Platform.TWITTER,
+                content=content,
+                author=SocialActor(
+                    id=f"mock_user_{(seed_int + i) % 9999}",
+                    username=f"mock_user_{(seed_int + i) % 9999}",
+                    platform=Platform.TWITTER,
+                ),
+                community_id=None,
+                timestamp=ts,
+                engagement_score=float(30 + (uid % 120)),
+                url=f"https://x.com/mock/status/{seed_int}n{i}",
+                sentiment=None,
+            )
+        )
+        i += 1
+
+    # Sort newest -> oldest for nicer previews
+    posts.sort(key=lambda p: p.timestamp, reverse=True)
+    return posts
+
+
+def _mock_hn_posts_from_x(
+    x_posts: List[UnifiedPost],
+    query: str,
+    domain: str,
+    lag_hours: int = 6,
+    limit: int = 25,
+) -> List[UnifiedPost]:
+    """Generate HN posts that follow X by a fixed lag to create clear correlation."""
+    base = (domain or query or "mock").strip().lower().encode("utf-8")
+    seed_int = int(hashlib.sha256(base).hexdigest()[:8], 16)
+    out: List[UnifiedPost] = []
+
+    for i, xp in enumerate((x_posts or [])[: max(1, int(limit or 25))]):
+        ts = xp.timestamp + timedelta(hours=int(lag_hours))
+        out.append(
+            UnifiedPost(
+                id=f"mock_hn_{seed_int}_{i}",
+                platform=Platform.HACKERNEWS,
+                content=f"HN: {query} discussion follows X wave #{i}. {query} (mock)",
+                author=SocialActor(
+                    id=f"mock_hn_user_{(seed_int + i) % 9999}",
+                    username=f"mock_hn_user_{(seed_int + i) % 9999}",
+                    platform=Platform.HACKERNEWS,
+                ),
+                community_id=None,
+                timestamp=ts,
+                engagement_score=float(80 + ((seed_int + i) % 300)),
+                url=f"https://news.ycombinator.com/item?id={seed_int}{i}",
+                sentiment=None,
+            )
+        )
+
+    out.sort(key=lambda p: p.timestamp, reverse=True)
+    return out
+
+
+def _mock_reddit_posts_from_x(
+    x_posts: List[UnifiedPost],
+    query: str,
+    domain: str,
+    lag_hours: int = 12,
+    limit: int = 20,
+) -> List[UnifiedPost]:
+    """Generate Reddit posts that follow X by a fixed lag to create clear correlation."""
+    base = (domain or query or "mock").strip().lower().encode("utf-8")
+    seed_int = int(hashlib.sha256(base).hexdigest()[8:16], 16)
+    out: List[UnifiedPost] = []
+
+    for i, xp in enumerate((x_posts or [])[: max(1, int(limit or 20))]):
+        ts = xp.timestamp + timedelta(hours=int(lag_hours))
+        out.append(
+            UnifiedPost(
+                id=f"mock_reddit_{seed_int}_{i}",
+                platform=Platform.REDDIT,
+                content=f"Reddit: reacting to {query} trend from X wave #{i}. {query} (mock)",
+                author=SocialActor(
+                    id=f"mock_reddit_user_{(seed_int + i) % 9999}",
+                    username=f"mock_reddit_user_{(seed_int + i) % 9999}",
+                    platform=Platform.REDDIT,
+                ),
+                community_id=None,
+                timestamp=ts,
+                engagement_score=float(120 + ((seed_int + i) % 400)),
+                url=f"https://reddit.com/r/mock/comments/{seed_int}{i}/{query}",
+                sentiment=None,
+            )
+        )
+
+    out.sort(key=lambda p: p.timestamp, reverse=True)
+    return out
+
+
 @router.post("/analytics/level3/ingest")
 async def ingest_level3_posts(
     domain: str = Body(..., embed=True),
     limit_x: int = Body(25, embed=True),
     limit_hn: int = Body(25, embed=True),
+    use_mock_x: bool = Body(False, embed=True),
 ):
     """Level 3: Fetch X (via Nitter/official) + HackerNews posts for a domain and persist into posts table."""
     if not domain:
@@ -175,34 +352,114 @@ async def ingest_level3_posts(
         raise HTTPException(status_code=400, detail="Invalid domain")
 
     x_errors = []
-    try:
-        x_posts: List[UnifiedPost] = await x_source.fetch_posts(query, limit=int(limit_x or 25))
-    except Exception as e:
-        print(f"X ingest warning: {e}")
-        x_posts = []
+    if use_mock_x:
+        x_posts = _mock_x_posts(query=query, domain=domain, limit=int(limit_x or 25))
+        # Also generate aligned HN + Reddit signals within the same time window so causation
+        # has cross-platform overlap when cutoff is applied.
+        mock_hn_posts = _mock_hn_posts_from_x(
+            x_posts=x_posts,
+            query=query,
+            domain=domain,
+            lag_hours=6,
+            limit=int(limit_hn or 25),
+        )
+        mock_reddit_posts = _mock_reddit_posts_from_x(
+            x_posts=x_posts,
+            query=query,
+            domain=domain,
+            lag_hours=12,
+            limit=20,
+        )
+    else:
         try:
-            x_errors = getattr(x_source, "last_errors", []) or []
-        except Exception:
-            x_errors = []
+            x_posts = await x_source.fetch_posts(query, limit=int(limit_x or 25))
+        except Exception as e:
+            print(f"X ingest warning: {e}")
+            x_posts = []
+            try:
+                x_errors = getattr(x_source, "last_errors", []) or []
+            except Exception:
+                x_errors = []
 
-    try:
-        hn_posts: List[UnifiedPost] = await hn_source.fetch_posts(query, limit=int(limit_hn or 25))
-    except Exception as e:
-        print(f"HN ingest warning: {e}")
-        hn_posts = []
+    if use_mock_x:
+        hn_posts = mock_hn_posts
+        reddit_posts = mock_reddit_posts
+    else:
+        reddit_posts = []
+        try:
+            hn_posts = await hn_source.fetch_posts(query, limit=int(limit_hn or 25))
+        except Exception as e:
+            print(f"HN ingest warning: {e}")
+            hn_posts = []
 
     def _persist():
         persist_generic_posts(x_posts, company_domain=domain)
         persist_generic_posts(hn_posts, company_domain=domain)
+        if reddit_posts:
+            persist_generic_posts(reddit_posts, company_domain=domain)
 
     await asyncio.to_thread(_persist)
+
+    # Diagnostics: confirm what's in DB for this company_domain
+    def _platform_counts_company() -> Dict[str, int]:
+        try:
+            resp = (
+                supabase.table("posts")
+                .select("platform")
+                .eq("company_domain", domain)
+                .limit(1000)
+                .execute()
+            )
+            rows = resp.data or []
+            counts: Dict[str, int] = {}
+            for r in rows:
+                p = (r.get("platform") or "unknown")
+                counts[p] = counts.get(p, 0) + 1
+            return counts
+        except Exception:
+            return {}
+
+    persisted_platform_counts = await asyncio.to_thread(_platform_counts_company)
+
     return {
         "domain": domain,
         "query": query,
+        "use_mock_x": bool(use_mock_x),
         "ingested": {
             "x": len(x_posts),
             "hackernews": len(hn_posts),
+            "reddit": len(reddit_posts),
         },
+        "samples": {
+            "x": [
+                {
+                    "id": p.id,
+                    "platform": p.platform.value,
+                    "timestamp": p.timestamp.isoformat() if getattr(p, "timestamp", None) else None,
+                    "content": (p.content or "")[:140],
+                }
+                for p in x_posts[:3]
+            ],
+            "hackernews": [
+                {
+                    "id": p.id,
+                    "platform": p.platform.value,
+                    "timestamp": p.timestamp.isoformat() if getattr(p, "timestamp", None) else None,
+                    "content": (p.content or "")[:140],
+                }
+                for p in hn_posts[:3]
+            ],
+            "reddit": [
+                {
+                    "id": p.id,
+                    "platform": p.platform.value,
+                    "timestamp": p.timestamp.isoformat() if getattr(p, "timestamp", None) else None,
+                    "content": (p.content or "")[:140],
+                }
+                for p in reddit_posts[:3]
+            ],
+        },
+        "persisted_platform_counts": persisted_platform_counts,
         "errors": {
             "x": x_errors,
         },
@@ -229,7 +486,7 @@ async def get_causation(
         return (
             supabase.table("posts")
             .select("*")
-            # .gte("timestamp", cutoff_iso)
+            .gte("timestamp", cutoff_iso)
             .eq("company_domain", target_company)
             .execute()
         )
@@ -276,14 +533,14 @@ async def get_causation(
 
     platform_counts_all: Dict[str, int] = {}
     for p in db_posts:
-        k = str(p.platform)
+        k = p.platform.value if getattr(p, "platform", None) is not None else "unknown"
         platform_counts_all[k] = platform_counts_all.get(k, 0) + 1
 
     filtered = [p for p in db_posts if _matches(p)]
 
     platform_counts_filtered: Dict[str, int] = {}
     for p in filtered:
-        k = str(p.platform)
+        k = p.platform.value if getattr(p, "platform", None) is not None else "unknown"
         platform_counts_filtered[k] = platform_counts_filtered.get(k, 0) + 1
 
     result = causation_service.analyze_causation(filtered, query or target_company)

@@ -63,7 +63,44 @@ The system is built as a modular microservices-style application (monorepo):
 ### Level 3: Cross-Channel Causation
 - Models influence flow between platforms (e.g., "Twitter leads Reddit by 4 hours").
 - Uses **Time-Lag Cross-Correlation** to determine which channel breaks news first.
-- *(Note: Twitter data is mocked for demonstration purposes as API access requires paid plans).*
+- Supports a reliable demo mode via a request flag (`use_mock_x`) that generates deterministic bursty X data.
+- In mock mode, the backend also generates aligned mock HackerNews and Reddit posts (fixed lags) so the causation window has enough recent cross-channel overlap.
+
+## 🎥 Demo Steps (L2 + L3)
+
+### Level 2 (Competitive Exposure)
+1. Enter a target domain (e.g., `openai.com`) and optionally competitors.
+2. Click **Analyze** to run discovery and persist posts.
+3. Go to **Level 2** tab to view:
+   - Share of voice by subreddit
+   - Sentiment metrics
+   - Co-mentions
+   - Anomalies
+
+### Level 3 (Cross-Channel Causation)
+1. Go to **Level 3** tab.
+2. Enable **Use mock X data** (recommended for demos).
+3. Click **Fetch X + HackerNews** to ingest cross-channel posts.
+4. Click **Run Causation** to generate:
+   - Influence flow graph
+   - Predictions (next channel + ETA)
+   - Validation stats
+
+## 🔌 API Examples (curl)
+
+### Level 3 Ingest (mock mode)
+```bash
+curl -X POST http://localhost:8000/api/v1/analytics/level3/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"openai.com","limit_x":25,"limit_hn":25,"use_mock_x":true}'
+```
+
+### Level 3 Causation
+```bash
+curl -X POST http://localhost:8000/api/v1/analytics/causation \
+  -H "Content-Type: application/json" \
+  -d '{"target_company":"openai.com","days":14}'
+```
 
 ## 📂 Project Structure
 
